@@ -46,6 +46,25 @@ services:
       - SETGID
       - DAC_OVERRIDE
 
+  opa:
+    image: openpolicyagent/opa:latest-static
+    container_name: swiftdeploy-opa
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "/policies"
+    volumes:
+      - ./policies:/policies:ro
+    ports:
+      - "8181:8181"
+    networks:
+      - opa-internal
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+
 volumes:
   app-logs:
   nginx-logs:
@@ -53,3 +72,6 @@ volumes:
 networks:
   "{{network_name}}":
     driver: "{{network_driver}}"
+  opa-internal:
+    driver: bridge
+    internal: false

@@ -14,7 +14,6 @@ server {
     proxy_send_timeout {{proxy_timeout}}s;
     proxy_read_timeout {{proxy_timeout}}s;
 
-    # Forward X-Mode from upstream and add X-Deployed-By
     proxy_pass_header X-Mode;
     add_header X-Deployed-By swiftdeploy always;
 
@@ -35,18 +34,18 @@ server {
     location = /error502.json {
         internal;
         default_type application/json;
-        return 502 '{"error":"Bad Gateway","code":502,"service":"swiftdeploy","contact":"admin@swiftdeploy.local"}';
+        return 502 '{"error":"Bad Gateway","code":"502","service":"swiftdeploy","contact":"admin@swiftdeploy.local"}';
     }
 
     location = /error503.json {
         internal;
         default_type application/json;
-        return 503 '{"error":"Service Unavailable","code":503,"service":"swiftdeploy","contact":"admin@swiftdeploy.local"}';
+        return 503 '{"error":"Service Unavailable","code":"503","service":"swiftdeploy","contact":"admin@swiftdeploy.local"}';
     }
 
     location = /error504.json {
         internal;
         default_type application/json;
-        return 504 '{"error":"Gateway Timeout","code":504,"service":"swiftdeploy","contact":"admin@swiftdeploy.local"}';
+        return 504 '{"error":"Gateway Timeout","code":"504","service":"swiftdeploy","contact":"admin@swiftdeploy.local"}';
     }
 }

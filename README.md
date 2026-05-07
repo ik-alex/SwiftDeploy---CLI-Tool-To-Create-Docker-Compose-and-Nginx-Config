@@ -1,183 +1,131 @@
-# SwiftDeploy — Declarative Deployment Tool
+# SwiftDeploy
 
-A CLI tool that reads a declarative `manifest.yaml` and generates all infrastructure configs (Nginx, Docker Compose) from it. The manifest is the single source of truth — delete the generated files, re-run `swiftdeploy init`, and everything regenerates.
+Declarative deployment CLI with OPA policy enforcement, observability, and auditing.
 
-## Project Structure
+## Architecture
 
 ```
-.
-├── manifest.yaml              # Single source of truth
-├── swiftdeploy                # CLI tool (bash)
-├── Dockerfile                 # Multi-stage Go build, non-root, <300MB
-├── app/
-│   ├── main.go                # API service (Go)
-│   └── go.mod                 # Go module
-├── templates/
-│   ├── nginx.conf.tpl         # Nginx config template
-│   └── docker-compose.yml.tpl # Docker Compose template
-├── nginx.conf                 # Generated (do not edit)
-├── docker-compose.yml         # Generated (do not edit)
-└── README.md
+┌──────────┐     ┌───────────┐     ┌──────────┐
+│  Client   │────▶│   Nginx   │────▶│  Go App  │
+│           │◀────│  :8080    │◀────│  :3000   │
+└──────────┘     └───────────┘     └──────────┘
+                                        │
+                                   /metrics
+                                        │
+┌──────────┐                      ┌──────────┐
+│   CLI    │─────policy query────▶│   OPA    │
+│swiftdeploy│◀────decision────────│  :8181   │
+└──────────┘                      └──────────┘
 ```
 
 ## Prerequisites
 
-- Docker and Docker Compose
-- Bash
-- Python 3 (for YAML validation in `validate`)
+- Docker & Docker Compose
+- Python 3 with PyYAML (`pip install pyyaml`)
 - curl
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repo
-git clone https://github.com/ik-alex/swiftdeploy.git
-cd swiftdeploy
-
-# 2. Build the Docker image
+# Build the app image
 docker build -t swift-deploy-1-node:latest .
 
-# 3. Deploy
+# Deploy the full stack
 ./swiftdeploy deploy
+
+# Check status dashboard
+./swiftdeploy validate
+
+# Promote to canary
+./swiftdeploy promote canary
+
+# Inject chaos
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"mode":"slow","duration":2}' http://localhost:8080/chaos
+
+# Promote back to stable
+./swiftdeploy promote stable
+
+# Generate audit report
+./swiftdeploy audit
+
+# Tear down everything
+./swiftdeploy teardown --clean
 ```
 
-The service is now live at `http://localhost:8080`.
-
-## CLI Subcommands
+## CLI Commands
 
 ### `./swiftdeploy init`
 
-Parses `manifest.yaml` and generates `nginx.conf` and `docker-compose.yml` from templates.
-
-```bash
-./swiftdeploy init
-# [INFO]  Parsing manifest and generating configs...
-# [PASS]  Generated nginx.conf
-# [PASS]  Generated docker-compose.yml
-# [INFO]  Init complete
-```
+Parses `manifest.yaml` and generates `nginx.conf` and `docker-compose.yml` from templates. Also verifies OPA policy files exist.
 
 ### `./swiftdeploy validate`
 
 Runs 5 pre-flight checks:
 
-1. `manifest.yaml` exists and is valid YAML
-2. All required fields are present and non-empty
+1. manifest.yaml exists and is valid YAML
+2. All required fields are present
 3. Docker image exists locally
-4. Nginx port is not already bound
-5. Generated `nginx.conf` is syntactically valid
-
-```bash
-./swiftdeploy validate
-```
+4. Nginx port is available
+5. Generated nginx.conf syntax is valid
 
 ### `./swiftdeploy deploy`
 
-Runs `init`, starts the stack, and waits for health checks to pass (60s timeout).
+Runs init, checks infrastructure policy via OPA (disk space, CPU load), starts all containers, and waits for health checks to pass within 60s.
 
-```bash
-./swiftdeploy deploy
-# [INFO]  Starting deployment...
-# [PASS]  Generated nginx.conf
-# [PASS]  Generated docker-compose.yml
-# [INFO]  Starting containers...
-# [PASS]  Health check passed!
-# [INFO]  Service is live at http://localhost:8080
-```
+### `./swiftdeploy promote [canary|stable]`
 
-### `./swiftdeploy promote <canary|stable>`
+Switches deployment mode. When promoting from canary to stable, queries OPA canary safety policy (error rate, P99 latency) before allowing promotion.
 
-Switches deployment mode:
+### `./swiftdeploy validate`
 
-```bash
-# Switch to canary mode
-./swiftdeploy promote canary
+Live-refreshing terminal dashboard showing real-time metrics, policy compliance, and chaos state. Appends each scrape to `history.jsonl`.
 
-# Switch back to stable
-./swiftdeploy promote stable
-```
+### `./swiftdeploy audit`
 
-This updates `manifest.yaml`, regenerates `docker-compose.yml`, restarts only the app container, and confirms the new mode via `/healthz`.
+Generates `audit_report.md` from `history.jsonl` with timeline, policy violations, and metrics summary.
 
 ### `./swiftdeploy teardown [--clean]`
 
-Removes all containers, networks, and volumes. With `--clean`, also deletes generated config files.
-
-```bash
-./swiftdeploy teardown          # stop and remove stack
-./swiftdeploy teardown --clean  # also delete nginx.conf and docker-compose.yml
-```
+Removes all containers, networks, and volumes. `--clean` also deletes generated config files.
 
 ## API Endpoints
 
-### `GET /`
+| Endpoint   | Method | Description                                   |
+| ---------- | ------ | --------------------------------------------- |
+| `/`        | GET    | Welcome message with mode, version, timestamp |
+| `/healthz` | GET    | Health check with status and uptime           |
+| `/metrics` | GET    | Prometheus-format metrics                     |
+| `/chaos`   | POST   | Chaos injection (canary mode only)            |
 
-Returns welcome message with mode, version, and timestamp.
+## OPA Policies
 
-```bash
-curl http://localhost:8080/
-# {"message":"Welcome! Running in stable mode","mode":"stable","version":"1.0.0","timestamp":"2026-05-04T12:00:00Z"}
+### Infrastructure Policy (`policies/infra.rego`)
+
+Blocks deployment if disk free < 10GB or CPU load > 2.0.
+
+### Canary Safety Policy (`policies/canary.rego`)
+
+Blocks promotion if error rate > 1% or P99 latency > 500ms.
+
+Thresholds are defined in `policies/data.json` and are not hardcoded in Rego files.
+
+## Project Structure
+
 ```
-
-### `GET /healthz`
-
-Returns health status and uptime in seconds.
-
-```bash
-curl http://localhost:8080/healthz
-# {"status":"ok","uptime":123.45,"mode":"stable"}
+├── manifest.yaml          # Single source of truth
+├── swiftdeploy            # CLI tool
+├── Dockerfile             # Go app container
+├── app/
+│   ├── main.go            # Go API service
+│   ├── go.mod
+│   └── go.sum
+├── templates/
+│   ├── nginx.conf.tpl     # Nginx config template
+│   └── docker-compose.yml.tpl  # Compose template
+├── policies/
+│   ├── infra.rego         # Infrastructure policy
+│   ├── canary.rego        # Canary safety policy
+│   └── data.json          # Policy thresholds
+└── README.md
 ```
-
-### `POST /chaos` (canary mode only)
-
-Simulate degraded behavior:
-
-```bash
-# Slow responses (3 second delay)
-curl -X POST http://localhost:8080/chaos -d '{"mode":"slow","duration":3}'
-
-# Random errors (50% of requests return 500)
-curl -X POST http://localhost:8080/chaos -d '{"mode":"error","rate":0.5}'
-
-# Recover
-curl -X POST http://localhost:8080/chaos -d '{"mode":"recover"}'
-```
-
-Returns 403 in stable mode.
-
-## Manifest Reference
-
-```yaml
-services:
-  image: swift-deploy-1-node:latest # Docker image name
-  port: 3000 # App internal port
-  mode: stable # stable or canary
-  version: "1.0.0" # App version
-  restart_policy: unless-stopped # Docker restart policy
-
-nginx:
-  image: nginx:latest # Nginx image
-  port: 8080 # Public-facing port
-  proxy_timeout: 30 # Proxy timeout in seconds
-
-network:
-  name: swiftdeploy-net # Docker network name
-  driver_type: bridge # Network driver
-```
-
-## Design Decisions
-
-- **No chi/external dependencies in the API.** Go 1.22's `net/http` supports method-based routing (`GET /`, `POST /chaos`), so no router library is needed. This keeps the image tiny.
-- **Bash CLI over Python.** Avoids adding Python as a runtime dependency for the CLI itself. YAML parsing uses simple `awk`/`sed` since the manifest structure is flat.
-- **Templates use `{{placeholder}}` syntax.** Simple `sed` replacement — no Jinja2 dependency needed.
-- **Multi-stage Docker build.** Builder stage compiles Go, runtime stage is Alpine with the binary only. Image is well under 300MB.
-- **Non-root container.** The Dockerfile creates `appuser` and switches to it before CMD. Linux capabilities are dropped via `cap_drop: ALL` in the compose template.
-
-## Screenshots
-
-- [Validate output](screenshots/validate.png)
-- [Deploy output](screenshots/deploy.png)
-- [Promote + /healthz](screenshots/promote.png)
-- [Generated nginx.conf](screenshots/nginx-conf.png)
-- [Generated docker-compose.yml](screenshots/docker-compose.png)
-- [Nginx access logs](screenshots/nginx-logs.png)
